@@ -1,5 +1,14 @@
 INCLUDE "include/hardware.inc"
 
+; Tile IDs
+DEF BRICK_LEFT EQU $05
+DEF BRICK_RIGHT EQU $06
+DEF BLANK_TILE EQU $08
+DEF DIGIT_OFFSET EQU $1A
+
+DEF SCORE_TENS EQU $9870
+DEF SCORE_ONES EQU $9871
+
 SECTION "Header", ROM0[$100]
     nop
     jp EntryPoint
@@ -35,6 +44,12 @@ WaitVBlank:
     ld bc, Paddle.end - Paddle
     call Copy
 
+    ; Copy the ball tile
+    ld de, Ball
+    ld hl, $8010
+    ld bc, Ball.end - Ball
+    call Copy
+
     ; Clear OAM
     ld a, 0
     ld b, 160
@@ -44,7 +59,7 @@ ClearOam:
     dec b
     jp nz, ClearOam
 
-    ; Draw an object
+    ; Initialize the paddle sprite in OAM
     ld hl, STARTOF(OAM)
     ld a, 128 + 16
     ld [hli], a
@@ -53,6 +68,31 @@ ClearOam:
     ld a, 0
     ld [hli], a
     ld [hli], a
+
+    ; Initialize the ball sprite in OAM
+    ld a, 100 + 16
+    ld [hli], a
+    ld a, 32 + 8
+    ld [hli], a
+    ld a, 1
+    ld [hli], a
+    ld a, 0
+    ld [hli], a
+
+    ; Initialize global variables
+    ld a, 0
+    ld [wFrameCounter], a
+    ld [wCurKeys], a
+    ld [wNewKeys], a
+    ld [wScore], a
+
+    ; Ball starts out going up and to the right
+    ld a, 1
+    ld [wBallMomentumX], a
+    ld a, -1
+    ld [wBallMomentumY], a
+
+    call UpdateScoreBoard
 
     ; Turn the LCD on
     ld a, LCDC_ON | LCDC_BG_ON | LCDC_OBJ_ON
@@ -64,12 +104,6 @@ ClearOam:
     ld a, %11_10_01_00
     ld [rOBP0], a
 
-    ; Initialize global variables
-    ld a, 0
-    ld [wFrameCounter], a
-    ld [wCurKeys], a
-    ld [wNewKeys], a
-
 Main:
     ; Wait until it's *not* VBlank
     ld a, [rLY]
@@ -79,6 +113,108 @@ WaitVBlank2:
     ld a, [rLY]
     cp LY_VBLANK
     jp c, WaitVBlank2
+
+    ; Add the ball's momentum to its position in OAM
+    ld a, [wBallMomentumX]
+    ld b, a
+    ld a, [STARTOF(OAM) + 5]
+    add a, b
+    ld [STARTOF(OAM) + 5], a
+
+    ld a, [wBallMomentumY]
+    ld b, a
+    ld a, [STARTOF(OAM) + 4]
+    add a, b
+    ld [STARTOF(OAM) + 4], a
+
+BounceOnTop:
+    ; Remember OAM has an offset (8, 16) is (0, 0) on the screen
+    ld a, [STARTOF(OAM) + 4]
+    sub a, 16 + 1
+    ld c, a
+    ld a, [STARTOF(OAM) + 5]
+    sub a, 8
+    ld b, a
+    call GetTileByPixel
+    ld a, [hl]
+    call IsWallTile
+    jp nz, BounceOnRight
+    call CheckAndHandleBrick
+    ld a, 1
+    ld [wBallMomentumY], a
+
+BounceOnRight:
+    ld a, [STARTOF(OAM) + 4]
+    sub a, 16
+    ld c, a
+    ld a, [STARTOF(OAM) + 5]
+    sub a, 8 - 1
+    ld b, a
+    call GetTileByPixel
+    ld a, [hl]
+    call IsWallTile
+    jp nz, BounceOnLeft
+    call CheckAndHandleBrick
+    ld a, -1
+    ld [wBallMomentumX], a
+
+BounceOnLeft:
+    ld a, [STARTOF(OAM) + 4]
+    sub a, 16
+    ld c, a
+    ld a, [STARTOF(OAM) + 5]
+    sub a, 8 + 1
+    ld b, a
+    call GetTileByPixel
+    ld a, [hl]
+    call IsWallTile
+    jp nz, BounceOnBottom
+    call CheckAndHandleBrick
+    ld a, 1
+    ld [wBallMomentumX], a
+
+BounceOnBottom:
+    ld a, [STARTOF(OAM) + 4]
+    sub a, 16 - 1
+    ld c, a
+    ld a, [STARTOF(OAM) + 5]
+    sub a, 8
+    ld b, a
+    call GetTileByPixel
+    ld a, [hl]
+    call IsWallTile
+    jp nz, BounceDone
+    call CheckAndHandleBrick
+    ld a, -1
+    ld [wBallMomentumY], a
+BounceDone:
+
+    ; First, check if the ball is low enough to bounce off the paddle.
+    ld a, [STARTOF(OAM)]
+    ld b, a
+    ld a, [STARTOF(OAM) + 4]
+    ; Adjusted to make it feel like the ball isn't sinking into the paddle
+    add a, 4
+    cp a, b
+    ; If the ball isn't at the same Y position as the paddle, it can't bounce.
+    jp nz, PaddleBounceDone
+
+    ; Now let's compare the X positions of the objects to see if they're touching.
+    ld a, [STARTOF(OAM) + 5] ; Ball's X position.
+    ld b, a
+    ld a, [STARTOF(OAM) + 1] ; Paddle's X position.
+    sub a, 8
+    cp a, b
+    jp nc, PaddleBounceDone
+    add a, 8 + 16 ; 8 to undo, 16 as the width.
+    cp a, b
+    jp c, PaddleBounceDone
+
+    ld a, -1
+    ld [wBallMomentumY], a
+
+PaddleBounceDone:
+
 
     ; Check the current keys every frame and move left or right
     call UpdateKeys
@@ -165,6 +301,109 @@ UpdateKeys:
 .known_ret
     ret
 
+; Convert a pixel position to a tilemap address
+; hl = $9800 + X + Y * 32
+; @param b: X
+; @param c: Y
+; @return hl: tile address
+GetTileByPixel:
+    ; First, we need to divide by 8 to convert a pixel position to a tile position.
+    ; After this we want to multiply the Y position by 32.
+    ; These operations effectively cancel out so we need to mask the Y value.
+    ld a, c
+    and a, %11111000
+    ld l, a
+    ld h, 0
+
+    ; Now we have the position * 8 in hl
+    add hl, hl ; position * 16
+    add hl, hl ; position * 32
+
+    ; Convert the X position to an offset
+    ld a, b
+    srl a ; a / 2
+    srl a ; a / 4
+    srl a ; a / 8
+
+    ; Add the two offsets together
+    add a, l
+    ld l, a
+    adc a, h
+    sub a, l
+    ld h, a
+
+    ; Add the offset to the tilemap's base address
+    ld bc, $9800
+    add hl, bc
+    ret
+
+; @param a: tile ID
+; @return z: set if a is a wall
+IsWallTile:
+    cp a, $00
+    ret z
+    cp a, $01
+    ret z
+    cp a, $02
+    ret z
+    cp a, $03
+    ret z
+    cp a, $04
+    ret z
+    cp a, $05
+    ret z
+    cp a, $06
+    ret z
+    cp a, $07
+    ret
+
+; checks if a brick was collided with and breaks it if possible
+; @param hl: address of tile
+CheckAndHandleBrick:
+    ld a, [hl]
+    cp a, BRICK_LEFT
+    jr nz, CheckAndHandleBrickRight
+    ; Break a brick from the left side
+    ld [hl], BLANK_TILE
+    inc hl
+    ld [hl], BLANK_TILE
+    call IncreaseScore
+CheckAndHandleBrickRight:
+    cp a, BRICK_RIGHT
+    ret nz
+    ; Break a brick from the right side
+    ld [hl], BLANK_TILE
+    dec hl
+    ld [hl], BLANK_TILE
+    call IncreaseScore
+    ret
+
+; Increase score by 1 and store it as BCD number
+; Changes a and hl
+IncreaseScore:
+    xor a
+    inc a
+    ld hl, wScore
+    adc [hl]
+    daa
+    ld [hl], a
+    call UpdateScoreBoard
+    ret
+
+; Read BCD score from wScore and updates the score display
+UpdateScoreBoard:
+    ld a, [wScore]
+    and %11110000
+    swap a
+    add a, DIGIT_OFFSET
+    ld [SCORE_TENS], a
+
+    ld a, [wScore]
+    and %00001111
+    add a, DIGIT_OFFSET
+    ld [SCORE_ONES], a
+    ret
+
 Tiles:
     dw `33333333, `33333333, `33333333, `33322222, `33322222, `33322222, `33322211, `33322211 ; $00
     dw `33333333, `33333333, `33333333, `22222222, `22222222, `22222222, `11111111, `11111111 ; $01
@@ -192,6 +431,98 @@ Tiles:
     dw `11331111, `11331111, `11331111, `11331111, `11330000, `11330000, `11330000, `33330000 ; $17
     dw `11113311, `11113311, `00003311, `00003311, `00003311, `00003311, `00003311, `00333311 ; $18
     dw `11111133, `11111133, `11111133, `11111133, `11111133, `11111133, `11111133, `11113333 ; $19
+
+    ; digits
+    ; 0
+    dw `33333333
+    dw `33000033
+    dw `30033003
+    dw `30033003
+    dw `30033003
+    dw `30033003
+    dw `33000033
+    dw `33333333
+    ; 1
+    dw `33333333
+    dw `33300333
+    dw `33000333
+    dw `33300333
+    dw `33300333
+    dw `33300333
+    dw `33000033
+    dw `33333333
+    ; 2
+    dw `33333333
+    dw `33000033
+    dw `30330003
+    dw `33330003
+    dw `33000333
+    dw `30003333
+    dw `30000003
+    dw `33333333
+    ; 3
+    dw `33333333
+    dw `30000033
+    dw `33330003
+    dw `33000033
+    dw `33330003
+    dw `33330003
+    dw `30000033
+    dw `33333333
+    ; 4
+    dw `33333333
+    dw `33000033
+    dw `30030033
+    dw `30330033
+    dw `30330033
+    dw `30000003
+    dw `33330033
+    dw `33333333
+    ; 5
+    dw `33333333
+    dw `30000033
+    dw `30033333
+    dw `30000033
+    dw `33330003
+    dw `30330003
+    dw `33000033
+    dw `33333333
+    ; 6
+    dw `33333333
+    dw `33000033
+    dw `30033333
+    dw `30000033
+    dw `30033003
+    dw `30033003
+    dw `33000033
+    dw `33333333
+    ; 7
+    dw `33333333
+    dw `30000003
+    dw `33333003
+    dw `33330033
+    dw `33300333
+    dw `33000333
+    dw `33000333
+    dw `33333333
+    ; 8
+    dw `33333333
+    dw `33000033
+    dw `30333003
+    dw `33000033
+    dw `30333003
+    dw `30333003
+    dw `33000033
+    dw `33333333
+    ; 9
+    dw `33333333
+    dw `33000033
+    dw `30330003
+    dw `30330003
+    dw `33000003
+    dw `33330003
+    dw `33000033
+    dw `33333333
 .end
 
 Tilemap:
@@ -216,7 +547,25 @@ Tilemap:
 .end
 
 Paddle:
-    dw `13333331, `30000003, `13333331, `00000000, `00000000, `00000000, `00000000,  `00000000
+    dw `13333331
+    dw `30000003
+    dw `13333331
+    dw `00000000
+    dw `00000000
+    dw `00000000
+    dw `00000000
+    dw `00000000
+.end
+
+Ball:
+    dw `00033000
+    dw `00322300
+    dw `03222230
+    dw `03222230
+    dw `00322300
+    dw `00033000
+    dw `00000000
+    dw `00000000
 .end
 
 SECTION "Counter", WRAM0
@@ -225,3 +574,10 @@ wFrameCounter: ds 1
 SECTION "Input Variables", WRAM0
 wCurKeys: ds 1
 wNewKeys: ds 1
+
+SECTION "Ball Data", WRAM0
+wBallMomentumX: ds 1
+wBallMomentumY: ds 1
+
+SECTION "Score", WRAM0
+wScore: ds 1
