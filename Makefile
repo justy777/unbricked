@@ -26,11 +26,11 @@ $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.asm | $(OBJ_DIR)
-	$(ASM) $(ASMFLAGS) -o $@ $<
+	$(ASM) $(ASMFLAGS) --output $@ $<
 
 $(BIN_DIR)/$(ROM): $(OBJS) | $(BIN_DIR)
-	$(LINK) $(LINKFLAGS) -o $@ $<
-	$(FIX) $(FIXFLAGS) -v $@
+	$(LINK) $(LINKFLAGS) --output $@ $<
+	$(FIX) $(FIXFLAGS) --validate $@
 
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
