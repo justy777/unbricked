@@ -17,42 +17,153 @@ WaitVBlank:
     ld a, LCDC_OFF
     ld [rLCDC], a
 
-; Copy the tile data
+    ; Copy the tile data
     ld de, Tiles
     ld hl, $9000
     ld bc, Tiles.end - Tiles
-CopyTiles:
-    ld a, [de]
-    ld [hli], a
-    inc de
-    dec bc
-    ld a, b
-    or a, c
-    jp nz, CopyTiles
+    call Copy
 
-; Copy the tilemap
+    ; Copy the tilemap
     ld de, Tilemap
     ld hl, $9800
     ld bc, Tilemap.end - Tilemap
-CopyTilemap:
-    ld a, [de]
-    ld [hli], a
-    inc de
-    dec bc
-    ld a, b
-    or a, c
-    jp nz, CopyTilemap
+    call Copy
 
- ; Turn the LCD on
-    ld a, LCDC_ON | LCDC_BG_ON
+    ; Copy the paddle tile
+    ld de, Paddle
+    ld hl, $8000
+    ld bc, Paddle.end - Paddle
+    call Copy
+
+    ; Clear OAM
+    ld a, 0
+    ld b, 160
+    ld hl, STARTOF(OAM)
+ClearOam:
+    ld [hli], a
+    dec b
+    jp nz, ClearOam
+
+    ; Draw an object
+    ld hl, STARTOF(OAM)
+    ld a, 128 + 16
+    ld [hli], a
+    ld a, 16 + 8
+    ld [hli], a
+    ld a, 0
+    ld [hli], a
+    ld [hli], a
+
+    ; Turn the LCD on
+    ld a, LCDC_ON | LCDC_BG_ON | LCDC_OBJ_ON
     ld [rLCDC], a
 
     ; During the first (blank) frame, initialize display registers
     ld a, %11_10_01_00
     ld [rBGP], a
+    ld a, %11_10_01_00
+    ld [rOBP0], a
 
-Done:
-    jp Done
+    ; Initialize global variables
+    ld a, 0
+    ld [wFrameCounter], a
+    ld [wCurKeys], a
+    ld [wNewKeys], a
+
+Main:
+    ; Wait until it's *not* VBlank
+    ld a, [rLY]
+    cp LY_VBLANK
+    jp nc, Main
+WaitVBlank2:
+    ld a, [rLY]
+    cp LY_VBLANK
+    jp c, WaitVBlank2
+
+    ; Check the current keys every frame and move left or right
+    call UpdateKeys
+
+; Check if the left button is pressed
+CheckLeft:
+    ld a, [wCurKeys]
+    and a, PAD_LEFT
+    jp z, CheckRight
+Left:
+    ; Move the paddle one pixel to the left
+    ld a, [STARTOF(OAM) + 1]
+    dec a
+    ; If object hit the edge then don't move
+    cp a, 15
+    jp z, Main
+    ld [STARTOF(OAM) + 1], a
+    jp Main
+
+; Check if right button is pressed
+CheckRight:
+    ld a, [wCurKeys]
+    and a, PAD_RIGHT
+    jp z, Main
+Right:
+    ; Move the paddle one pixel to the right
+    ld a, [STARTOF(OAM) + 1]
+    inc a
+    ; If object hit the edge then don't move
+    cp a, 105
+    jp z, Main
+    ld [STARTOF(OAM) + 1], a
+    jp Main
+
+; Copy bytes from one area to another.
+; @param de: Source
+; @param hl: Destination
+; @param bc: Length
+Copy:
+    ld a, [de]
+    ld [hli], a
+    inc de
+    dec bc
+    ld a, b
+    or a, c
+    jp nz, Copy
+    ret
+
+UpdateKeys:
+    ; Poll half the controller
+    ld a, JOYP_GET_BUTTONS
+    call .one_nibble
+    ; B7-4 = 1; B3-0 unpressed buttons
+    ld b, a
+
+    ; Poll the other half
+    ld a, JOYP_GET_CTRL_PAD
+    call .one_nibble
+    ; A7-4 = unpressed directions; A3-0 = 1
+    swap a
+    xor a, b
+    ld b, a
+
+    ; Release the controller
+    ld a, JOYP_GET_NONE
+    ldh [rJOYP], a
+
+    ; Combine with previous wCurKeys to make wNewKeys
+    ld a, [wCurKeys]
+    xor a, b ; A = keys that changed state
+    and a, b ; A = keys that changed to pressed
+    ld [wNewKeys], a
+    ld a, b
+    ld [wCurKeys], a
+    ret
+
+.one_nibble
+    ldh [rJOYP], a
+    call .known_ret
+    ldh a, [rJOYP]
+    ldh a, [rJOYP]
+    ldh a, [rJOYP]
+    or $F0
+.known_ret
+    ret
 
 Tiles:
     dw `33333333, `33333333, `33333333, `33322222, `33322222, `33322222, `33322211, `33322211 ; $00
@@ -103,3 +214,14 @@ Tilemap:
     db $04, $08, $08, $08, $08, $08, $08, $08, $08, $08, $08, $08, $08, $07, $03, $16, $17, $18, $19, $03, 0,0,0,0,0,0,0,0,0,0,0,0
     db $04, $09, $09, $09, $09, $09, $09, $09, $09, $09, $09, $09, $09, $07, $03, $03, $03, $03, $03, $03, 0,0,0,0,0,0,0,0,0,0,0,0
 .end
+
+Paddle:
+    dw `13333331, `30000003, `13333331, `00000000, `00000000, `00000000, `00000000,  `00000000
+.end
+
+SECTION "Counter", WRAM0
+wFrameCounter: ds 1
+
+SECTION "Input Variables", WRAM0
+wCurKeys: ds 1
+wNewKeys: ds 1
